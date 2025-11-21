@@ -124,7 +124,14 @@ class ModelWrapper(LightningModule):
 
         # Run the model.
         gaussians = self.encoder(
-            batch["context"], self.global_step, False, scene_names=batch["scene"]
+            images=batch["context"]["image"],
+            extrinsics=batch["context"]["extrinsics"],
+            intrinsics=batch["context"]["intrinsics"],
+            near=batch["context"]["near"],
+            far=batch["context"]["far"],
+            global_step=self.global_step,
+            deterministic=False,
+            scene_names=batch["scene"],
         )
         output = self.decoder.forward(
             gaussians,
@@ -189,8 +196,12 @@ class ModelWrapper(LightningModule):
         # Render Gaussians.
         with self.benchmarker.time("encoder"):
             gaussians = self.encoder(
-                batch["context"],
-                self.global_step,
+                images=batch["context"]["image"],
+                extrinsics=batch["context"]["extrinsics"],
+                intrinsics=batch["context"]["intrinsics"],
+                near=batch["context"]["near"],
+                far=batch["context"]["far"],
+                global_step=self.global_step,
                 deterministic=False,
             )
         with self.benchmarker.time("decoder", num_calls=v):
@@ -303,8 +314,12 @@ class ModelWrapper(LightningModule):
         b, _, _, h, w = batch["target"]["image"].shape
         assert b == 1
         gaussians_softmax = self.encoder(
-            batch["context"],
-            self.global_step,
+            images=batch["context"]["image"],
+            extrinsics=batch["context"]["extrinsics"],
+            intrinsics=batch["context"]["intrinsics"],
+            near=batch["context"]["near"],
+            far=batch["context"]["far"],
+            global_step=self.global_step,
             deterministic=False,
         )
         output_softmax = self.decoder.forward(

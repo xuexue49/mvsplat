@@ -19,8 +19,13 @@ class Encoder(nn.Module, ABC, Generic[T]):
     @abstractmethod
     def forward(
         self,
-        context: BatchedViews,
-        deterministic: bool,
+        images: "Tensor",
+        extrinsics: "Tensor",
+        intrinsics: "Tensor",
+        near: "Tensor",
+        far: "Tensor",
+        global_step: int,
+        deterministic: bool = False,
     ) -> Gaussians:
         pass
 

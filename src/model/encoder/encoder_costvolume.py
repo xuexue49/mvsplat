@@ -142,29 +142,33 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
 
     def forward(
         self,
-        context: dict,
+        images: Tensor,
+        extrinsics: Tensor,
+        intrinsics: Tensor,
+        near: Tensor,
+        far: Tensor,
         global_step: int,
         deterministic: bool = False,
         visualization_dump: Optional[dict] = None,
         scene_names: Optional[list] = None,
     ) -> Gaussians:
-        device = context["image"].device
-        b, v, _, h, w = context["image"].shape
+        device = images.device
+        b, v, _, h, w = images.shape
 
         # Encode the context images.
         if self.cfg.use_epipolar_trans:
             epipolar_kwargs = {
                 "epipolar_sampler": self.epipolar_sampler,
                 "depth_encoding": self.depth_encoding,
-                "extrinsics": context["extrinsics"],
-                "intrinsics": context["intrinsics"],
-                "near": context["near"],
-                "far": context["far"],
+                "extrinsics": extrinsics,
+                "intrinsics": intrinsics,
+                "near": near,
+                "far": far,
             }
         else:
             epipolar_kwargs = None
         trans_features, cnn_features = self.backbone(
-            context["image"],
+            images,
             attn_splits=self.cfg.multiview_trans_attn_split,
             return_cnn_features=True,
             epipolar_kwargs=epipolar_kwargs,
@@ -173,15 +177,15 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         # Sample depths from the resulting features.
         in_feats = trans_features
         extra_info = {}
-        extra_info['images'] = rearrange(context["image"], "b v c h w -> (v b) c h w")
+        extra_info['images'] = rearrange(images, "b v c h w -> (v b) c h w")
         extra_info["scene_names"] = scene_names
         gpp = self.cfg.gaussians_per_pixel
         depths, densities, raw_gaussians = self.depth_predictor(
             in_feats,
-            context["intrinsics"],
-            context["extrinsics"],
-            context["near"],
-            context["far"],
+            intrinsics,
+            extrinsics,
+            near,
+            far,
             gaussians_per_pixel=gpp,
             deterministic=deterministic,
             extra_info=extra_info,
@@ -201,8 +205,8 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
         gpp = self.cfg.gaussians_per_pixel
         gaussians = self.gaussian_adapter.forward(
-            rearrange(context["extrinsics"], "b v i j -> b v () () () i j"),
-            rearrange(context["intrinsics"], "b v i j -> b v () () () i j"),
+            rearrange(extrinsics, "b v i j -> b v () () () i j"),
+            rearrange(intrinsics, "b v i j -> b v () () () i j"),
             rearrange(xy_ray, "b v r srf xy -> b v r srf () xy"),
             depths,
             self.map_pdf_to_opacity(densities, global_step) / gpp,
