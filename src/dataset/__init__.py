@@ -5,9 +5,7 @@ from .dataset_re10k import DatasetRE10k, DatasetRE10kCfg
 from .types import Stage
 from .view_sampler import get_view_sampler
 
-DATASETS: dict[str, Dataset] = {
-    "re10k": DatasetRE10k,
-}
+
 
 
 DatasetCfg = DatasetRE10kCfg
@@ -25,4 +23,6 @@ def get_dataset(
         cfg.cameras_are_circular,
         step_tracker,
     )
-    return DATASETS[cfg.name](cfg, stage, view_sampler)
+    if cfg.name == "re10k":
+        return DatasetRE10k(cfg, stage, view_sampler)
+    raise NotImplementedError(f"Dataset {cfg.name} not implemented")
