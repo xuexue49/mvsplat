@@ -8,8 +8,31 @@ from omegaconf import DictConfig, OmegaConf
 from .dataset.data_module import DataLoaderCfg, DatasetCfg
 from .loss import LossCfgWrapper
 from .model.decoder import DecoderCfg
+from .model.decoder.decoder import DepthRenderingMode
 from .model.encoder import EncoderCfg
-from .model.model_wrapper import OptimizerCfg, TestCfg, TrainCfg
+
+
+@dataclass
+class OptimizerCfg:
+    lr: float
+    warm_up_steps: int
+    cosine_lr: bool
+
+
+@dataclass
+class TestCfg:
+    output_path: Path
+    compute_scores: bool
+    save_image: bool
+    save_video: bool
+    eval_time_skip_steps: int
+
+
+@dataclass
+class TrainCfg:
+    depth_mode: DepthRenderingMode | None
+    extended_visualization: bool
+    print_log_every_n_steps: int
 
 
 @dataclass

@@ -6,45 +6,48 @@ import hydra
 import torch
 import wandb
 from colorama import Fore
-from jaxtyping import install_import_hook
+
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import (
+    Callback,
     LearningRateMonitor,
     ModelCheckpoint,
 )
 from pytorch_lightning.loggers.wandb import WandbLogger
 
-# Configure beartype and jaxtyping.
-with install_import_hook(
-    ("src",),
-    ("beartype", "beartype"),
-):
-    from src.config import load_typed_root_config
-    from src.dataset.data_module import DataModule
-    from src.global_cfg import set_cfg
-    from src.loss import get_losses
-    from src.misc.LocalLogger import LocalLogger
-    from src.misc.step_tracker import StepTracker
-    from src.misc.wandb_tools import update_checkpoint_path
-    from src.model.decoder import get_decoder
-    from src.model.encoder import get_encoder
-    from src.model.model_wrapper import ModelWrapper
+from src.config import RootCfg, load_typed_root_config
+from src.dataset.data_module import DataModule
+from src.global_cfg import set_cfg
+from src.loss import get_losses
+from src.misc.LocalLogger import LocalLogger
+from src.misc.step_tracker import StepTracker
+from src.misc.wandb_tools import update_checkpoint_path
+from src.model.decoder import get_decoder
+from src.model.encoder import get_encoder
+from src.model.model_wrapper import ModelWrapper
 
 
 def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
 
 
-@hydra.main(
-    version_base=None,
-    config_path="../config",
-    config_name="main",
-)
-def train(cfg_dict: DictConfig):
-    cfg = load_typed_root_config(cfg_dict)
-    set_cfg(cfg_dict)
-
+def setup_infrastructure(
+    cfg_dict: DictConfig, cfg: RootCfg
+) -> tuple[Path, WandbLogger | LocalLogger, list[Callback], str | None]:
+    """
+    设置基础设施，包括输出目录、日志记录器和检查点回调。
+    
+    Args:
+        cfg_dict: Hydra的DictConfig对象。
+        cfg: 类型化的RootCfg对象。
+        
+    Returns:
+        output_dir: 输出目录路径。
+        logger: WandbLogger或LocalLogger实例。
+        callbacks: 回调列表。
+        checkpoint_path: 检查点路径（如果有）。
+    """
     # Set up the output directory.
     if cfg_dict.output_dir is None:
         output_dir = Path(
@@ -99,7 +102,32 @@ def train(cfg_dict: DictConfig):
 
     # Prepare the checkpoint for loading.
     checkpoint_path = update_checkpoint_path(cfg.checkpointing.load, cfg.wandb)
+    
+    return output_dir, logger, callbacks, checkpoint_path
 
+
+def setup_training_components(
+    cfg: RootCfg,
+    cfg_dict: DictConfig,
+    logger: WandbLogger | LocalLogger,
+    callbacks: list[Callback],
+    checkpoint_path: str | None,
+) -> tuple[Trainer, ModelWrapper, DataModule]:
+    """
+    初始化训练组件，包括Trainer、ModelWrapper和DataModule。
+    
+    Args:
+        cfg: 类型化的RootCfg对象。
+        cfg_dict: Hydra的DictConfig对象。
+        logger: 日志记录器。
+        callbacks: 回调列表。
+        checkpoint_path: 检查点路径。
+        
+    Returns:
+        trainer: PyTorch Lightning Trainer实例。
+        model_wrapper: 模型包装器实例。
+        data_module: 数据模块实例。
+    """
     # This allows the current step to be shared with the data loader processes.
     step_tracker = StepTracker()
 
@@ -145,6 +173,30 @@ def train(cfg_dict: DictConfig):
         cfg.data_loader,
         step_tracker,
         global_rank=trainer.global_rank,
+    )
+    
+    return trainer, model_wrapper, data_module
+
+
+@hydra.main(
+    version_base=None,
+    config_path="../config",
+    config_name="main",
+)
+def train(cfg_dict: DictConfig):
+    """
+    训练入口函数。
+    
+    Args:
+        cfg_dict: Hydra配置对象。
+    """
+    cfg = load_typed_root_config(cfg_dict)
+    set_cfg(cfg_dict)
+
+    output_dir, logger, callbacks, checkpoint_path = setup_infrastructure(cfg_dict, cfg)
+
+    trainer, model_wrapper, data_module = setup_training_components(
+        cfg, cfg_dict, logger, callbacks, checkpoint_path
     )
 
     if cfg.mode == "train":

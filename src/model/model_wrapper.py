@@ -2,10 +2,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
-import moviepy.editor as mpy
+
 import torch
 import wandb
-from einops import pack, rearrange, repeat
+from einops import rearrange
 from jaxtyping import Float
 from pytorch_lightning import LightningModule
 from pytorch_lightning.loggers.wandb import WandbLogger
@@ -25,15 +25,7 @@ from ..misc.image_io import prep_image, save_image, save_video
 from ..misc.LocalLogger import LOG_PATH, LocalLogger
 from ..misc.step_tracker import StepTracker
 from ..visualization.annotation import add_label
-from ..visualization.camera_trajectory.interpolation import (
-    interpolate_extrinsics,
-    interpolate_intrinsics,
-)
-from ..visualization.camera_trajectory.wobble import (
-    generate_wobble,
-    generate_wobble_transformation,
-)
-from ..visualization.color_map import apply_color_map_to_image
+
 from ..visualization.layout import add_border, hcat, vcat
 from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
@@ -42,27 +34,7 @@ from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 
 
-@dataclass
-class OptimizerCfg:
-    lr: float
-    warm_up_steps: int
-    cosine_lr: bool
-
-
-@dataclass
-class TestCfg:
-    output_path: Path
-    compute_scores: bool
-    save_image: bool
-    save_video: bool
-    eval_time_skip_steps: int
-
-
-@dataclass
-class TrainCfg:
-    depth_mode: DepthRenderingMode | None
-    extended_visualization: bool
-    print_log_every_n_steps: int
+from ..config import OptimizerCfg, TestCfg, TrainCfg
 
 
 @runtime_checkable
@@ -78,6 +50,10 @@ class TrajectoryFn(Protocol):
 
 
 class ModelWrapper(LightningModule):
+    """
+    MVSplat模型包装器，继承自PyTorch LightningModule。
+    负责模型的训练、验证和测试流程，以及日志记录和可视化。
+    """
     logger: Optional[WandbLogger]
     encoder: nn.Module
     encoder_visualizer: Optional[EncoderVisualizer]
@@ -99,6 +75,19 @@ class ModelWrapper(LightningModule):
         losses: list[Loss],
         step_tracker: StepTracker | None,
     ) -> None:
+        """
+        初始化模型包装器。
+        
+        Args:
+            optimizer_cfg: 优化器配置。
+            test_cfg: 测试配置。
+            train_cfg: 训练配置。
+            encoder: 编码器实例。
+            encoder_visualizer: 编码器可视化器（可选）。
+            decoder: 解码器实例。
+            losses: 损失函数列表。
+            step_tracker: 步数追踪器（可选）。
+        """
         super().__init__()
         self.optimizer_cfg = optimizer_cfg
         self.test_cfg = test_cfg
@@ -120,7 +109,17 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs = {}
             self.time_skip_steps_dict = {"encoder": 0, "decoder": 0}
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: BatchedExample, batch_idx: int) -> Tensor:
+        """
+        训练步骤。
+        
+        Args:
+            batch: 训练数据批次。
+            batch_idx: 批次索引。
+            
+        Returns:
+            total_loss: 总损失。
+        """
         batch: BatchedExample = self.data_shim(batch)
         _, _, _, h, w = batch["target"]["image"].shape
 
@@ -176,7 +175,14 @@ class ModelWrapper(LightningModule):
 
         return total_loss
 
-    def test_step(self, batch, batch_idx):
+    def test_step(self, batch: BatchedExample, batch_idx: int) -> None:
+        """
+        测试步骤。
+        
+        Args:
+            batch: 测试数据批次。
+            batch_idx: 批次索引。
+        """
         batch: BatchedExample = self.data_shim(batch)
         b, v, _, h, w = batch["target"]["image"].shape
         assert b == 1
@@ -277,7 +283,14 @@ class ModelWrapper(LightningModule):
             self.benchmarker.summarize()
 
     @rank_zero_only
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch: BatchedExample, batch_idx: int) -> None:
+        """
+        验证步骤。
+        
+        Args:
+            batch: 验证数据批次。
+            batch_idx: 批次索引。
+        """
         batch: BatchedExample = self.data_shim(batch)
 
         if self.global_rank == 0:
@@ -362,182 +375,72 @@ class ModelWrapper(LightningModule):
 
     @rank_zero_only
     def render_video_wobble(self, batch: BatchedExample) -> None:
-        # Two views are needed to get the wobble radius.
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-        if v != 2:
-            return
-
-        def trajectory_fn(t):
-            origin_a = batch["context"]["extrinsics"][:, 0, :3, 3]
-            origin_b = batch["context"]["extrinsics"][:, 1, :3, 3]
-            delta = (origin_a - origin_b).norm(dim=-1)
-            extrinsics = generate_wobble(
-                batch["context"]["extrinsics"][:, 0],
-                delta * 0.25,
-                t,
-            )
-            intrinsics = repeat(
-                batch["context"]["intrinsics"][:, 0],
-                "b i j -> b v i j",
-                v=t.shape[0],
-            )
-            return extrinsics, intrinsics
-
-        return self.render_video_generic(batch, trajectory_fn, "wobble", num_frames=60)
+        from ..visualization.validation_video import render_video_wobble
+        render_video_wobble(
+            self.encoder,
+            self.decoder,
+            batch,
+            self.global_step,
+            self.device,
+            self.logger,
+        )
 
     @rank_zero_only
     def render_video_interpolation(self, batch: BatchedExample) -> None:
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-
-        def trajectory_fn(t):
-            extrinsics = interpolate_extrinsics(
-                batch["context"]["extrinsics"][0, 0],
-                (
-                    batch["context"]["extrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["extrinsics"][0, 0]
-                ),
-                t,
-            )
-            intrinsics = interpolate_intrinsics(
-                batch["context"]["intrinsics"][0, 0],
-                (
-                    batch["context"]["intrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["intrinsics"][0, 0]
-                ),
-                t,
-            )
-            return extrinsics[None], intrinsics[None]
-
-        return self.render_video_generic(batch, trajectory_fn, "rgb")
+        from ..visualization.validation_video import render_video_interpolation
+        render_video_interpolation(
+            self.encoder,
+            self.decoder,
+            batch,
+            self.global_step,
+            self.device,
+            self.logger,
+        )
 
     @rank_zero_only
     def render_video_interpolation_exaggerated(self, batch: BatchedExample) -> None:
-        # Two views are needed to get the wobble radius.
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-        if v != 2:
-            return
-
-        def trajectory_fn(t):
-            origin_a = batch["context"]["extrinsics"][:, 0, :3, 3]
-            origin_b = batch["context"]["extrinsics"][:, 1, :3, 3]
-            delta = (origin_a - origin_b).norm(dim=-1)
-            tf = generate_wobble_transformation(
-                delta * 0.5,
-                t,
-                5,
-                scale_radius_with_t=False,
-            )
-            extrinsics = interpolate_extrinsics(
-                batch["context"]["extrinsics"][0, 0],
-                (
-                    batch["context"]["extrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["extrinsics"][0, 0]
-                ),
-                t * 5 - 2,
-            )
-            intrinsics = interpolate_intrinsics(
-                batch["context"]["intrinsics"][0, 0],
-                (
-                    batch["context"]["intrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["intrinsics"][0, 0]
-                ),
-                t * 5 - 2,
-            )
-            return extrinsics @ tf, intrinsics[None]
-
-        return self.render_video_generic(
+        from ..visualization.validation_video import render_video_interpolation_exaggerated
+        render_video_interpolation_exaggerated(
+            self.encoder,
+            self.decoder,
             batch,
-            trajectory_fn,
-            "interpolation_exagerrated",
-            num_frames=300,
-            smooth=False,
-            loop_reverse=False,
+            self.global_step,
+            self.device,
+            self.logger,
         )
 
     @rank_zero_only
     def render_video_generic(
         self,
         batch: BatchedExample,
-        trajectory_fn: TrajectoryFn,
+        trajectory_fn,
         name: str,
         num_frames: int = 30,
         smooth: bool = True,
         loop_reverse: bool = True,
     ) -> None:
-        # Render probabilistic estimate of scene.
-        gaussians_prob = self.encoder(batch["context"], self.global_step, False)
-        # gaussians_det = self.encoder(batch["context"], self.global_step, True)
-
-        t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
-        if smooth:
-            t = (torch.cos(torch.pi * (t + 1)) + 1) / 2
-
-        extrinsics, intrinsics = trajectory_fn(t)
-
-        _, _, _, h, w = batch["context"]["image"].shape
-
-        # Color-map the result.
-        def depth_map(result):
-            near = result[result > 0][:16_000_000].quantile(0.01).log()
-            far = result.view(-1)[:16_000_000].quantile(0.99).log()
-            result = result.log()
-            result = 1 - (result - near) / (far - near)
-            return apply_color_map_to_image(result, "turbo")
-
-        # TODO: Interpolate near and far planes?
-        near = repeat(batch["context"]["near"][:, 0], "b -> b v", v=num_frames)
-        far = repeat(batch["context"]["far"][:, 0], "b -> b v", v=num_frames)
-        output_prob = self.decoder.forward(
-            gaussians_prob, extrinsics, intrinsics, near, far, (h, w), "depth"
+        from ..visualization.validation_video import render_video_generic
+        render_video_generic(
+            self.encoder,
+            self.decoder,
+            batch,
+            trajectory_fn,
+            name,
+            self.global_step,
+            self.device,
+            self.logger,
+            num_frames,
+            smooth,
+            loop_reverse,
         )
-        images_prob = [
-            vcat(rgb, depth)
-            for rgb, depth in zip(output_prob.color[0], depth_map(output_prob.depth[0]))
-        ]
-        # output_det = self.decoder.forward(
-        #     gaussians_det, extrinsics, intrinsics, near, far, (h, w), "depth"
-        # )
-        # images_det = [
-        #     vcat(rgb, depth)
-        #     for rgb, depth in zip(output_det.color[0], depth_map(output_det.depth[0]))
-        # ]
-        images = [
-            add_border(
-                hcat(
-                    add_label(image_prob, "Softmax"),
-                    # add_label(image_det, "Deterministic"),
-                )
-            )
-            for image_prob, _ in zip(images_prob, images_prob)
-        ]
 
-        video = torch.stack(images)
-        video = (video.clip(min=0, max=1) * 255).type(torch.uint8).cpu().numpy()
-        if loop_reverse:
-            video = pack([video, video[::-1][1:-1]], "* c h w")[0]
-        visualizations = {
-            f"video/{name}": wandb.Video(video[None], fps=30, format="mp4")
-        }
-
-        # Since the PyTorch Lightning doesn't support video logging, log to wandb directly.
-        try:
-            wandb.log(visualizations)
-        except Exception:
-            assert isinstance(self.logger, LocalLogger)
-            for key, value in visualizations.items():
-                tensor = value._prepare_video(value.data)
-                clip = mpy.ImageSequenceClip(list(tensor), fps=value._fps)
-                dir = LOG_PATH / key
-                dir.mkdir(exist_ok=True, parents=True)
-                clip.write_videofile(
-                    str(dir / f"{self.global_step:0>6}.mp4"), logger=None
-                )
-
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> dict:
+        """
+        配置优化器和学习率调度器。
+        
+        Returns:
+            优化器配置字典。
+        """
         optimizer = optim.Adam(self.parameters(), lr=self.optimizer_cfg.lr)
         if self.optimizer_cfg.cosine_lr:
             warm_up = torch.optim.lr_scheduler.OneCycleLR(
