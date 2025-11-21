@@ -115,6 +115,11 @@ def get_callbacks(cfg: RootCfg, output_dir: Path) -> list[Callback]:
     )
     for cb in callbacks:
         cb.CHECKPOINT_EQUALS_CHAR = '_'
+    
+    # Add visualization callback for validation
+    from src.callbacks import VisualizationCallback
+    callbacks.append(VisualizationCallback(extended_visualization=cfg.train.extended_visualization))
+    
     return callbacks
 
 

@@ -21,14 +21,10 @@ from ..evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
 from ..global_cfg import get_cfg
 from ..loss import Loss
 from ..misc.benchmarker import Benchmarker
-from ..misc.image_io import prep_image, save_image, save_video
+from ..misc.image_io import save_image, save_video
 from ..misc.LocalLogger import LOG_PATH, LocalLogger
 from ..misc.step_tracker import StepTracker
-from ..visualization.annotation import add_label
 
-from ..visualization.layout import add_border, hcat, vcat
-from ..visualization import layout
-from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
@@ -329,49 +325,13 @@ class ModelWrapper(LightningModule):
             self.log(f"val/lpips_{tag}", lpips)
             ssim = compute_ssim(rgb_gt, rgb).mean()
             self.log(f"val/ssim_{tag}", ssim)
-
-        # Construct comparison image.
-        comparison = hcat(
-            add_label(vcat(*batch["context"]["image"][0]), "Context"),
-            add_label(vcat(*rgb_gt), "Target (Ground Truth)"),
-            add_label(vcat(*rgb_softmax), "Target (Softmax)"),
-        )
-        self.logger.log_image(
-            "comparison",
-            [prep_image(add_border(comparison))],
-            step=self.global_step,
-            caption=batch["scene"],
-        )
-
-        # Render projections and construct projection image.
-        projections = hcat(*render_projections(
-                                gaussians_softmax,
-                                256,
-                                extra_label="(Softmax)",
-                            )[0])
-        self.logger.log_image(
-            "projection",
-            [prep_image(add_border(projections))],
-            step=self.global_step,
-        )
-
-        # Draw cameras.
-        cameras = hcat(*render_cameras(batch, 256))
-        self.logger.log_image(
-            "cameras", [prep_image(add_border(cameras))], step=self.global_step
-        )
-
-        if self.encoder_visualizer is not None:
-            for k, image in self.encoder_visualizer.visualize(
-                batch["context"], self.global_step
-            ).items():
-                self.logger.log_image(k, [prep_image(image)], step=self.global_step)
-
-        # Run video validation step.
-        self.render_video_interpolation(batch)
-        self.render_video_wobble(batch)
-        if self.train_cfg.extended_visualization:
-            self.render_video_interpolation_exaggerated(batch)
+        
+        # Return data for visualization callback
+        return {
+            "gaussians": gaussians_softmax,
+            "rgb_pred": rgb_softmax,
+            "rgb_gt": rgb_gt,
+        }
 
     @rank_zero_only
     def render_video_wobble(self, batch: BatchedExample) -> None:
