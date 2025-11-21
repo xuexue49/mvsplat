@@ -185,6 +185,17 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             extra_info=extra_info,
             cnn_features=cnn_features,
         )
+        
+        # Reshape densities and depths to have the correct srf dimension
+        # depth_predictor returns shapes [b, v, r, 1, 1] but we need [b, v, r, srf, spp]
+        # We need to expand dimension 3 from 1 to srf
+        densities = densities.squeeze(-1)  # [b, v, r, 1, 1] -> [b, v, r, 1]
+        depths = depths.squeeze(-1)  # [b, v, r, 1, 1] -> [b, v, r, 1]
+        
+        # Expand to include srf dimension by repeating
+        # [b, v, r, 1] -> [b, v, r, srf, spp]
+        densities = densities.unsqueeze(-1).expand(-1, -1, -1, self.cfg.num_surfaces, gpp)
+        depths = depths.unsqueeze(-1).expand(-1, -1, -1, self.cfg.num_surfaces, gpp)
 
         # Convert the features and depths into Gaussians.
         xy_ray, _ = sample_image_grid((h, w), device)
@@ -198,6 +209,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         pixel_size = 1 / torch.tensor((w, h), dtype=torch.float32, device=device)
         xy_ray = xy_ray + (offset_xy - 0.5) * pixel_size
         gpp = self.cfg.gaussians_per_pixel
+        # densities already has shape [b, v, r, srf, spp] from depth_predictor
         gaussians = self.gaussian_adapter.forward(
             rearrange(context["extrinsics"], "b v i j -> b v () () () i j"),
             rearrange(context["intrinsics"], "b v i j -> b v () () () i j"),
