@@ -3,11 +3,9 @@ from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 import torch
-import wandb
 from einops import pack, rearrange, repeat
 from jaxtyping import Float
 from pytorch_lightning import LightningModule
-from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from torch import Tensor, nn, optim
 import numpy as np
@@ -55,6 +53,7 @@ class TestCfg:
     save_image: bool
     save_video: bool
     eval_time_skip_steps: int
+    experiment_name: str = "default"  # Used for organizing test outputs
 
 
 @dataclass
@@ -77,7 +76,7 @@ class TrajectoryFn(Protocol):
 
 
 class ModelWrapper(LightningModule):
-    logger: Optional[WandbLogger]
+    logger: Optional["Logger"]  # Type annotation for PyTorch Lightning logger
     encoder: nn.Module
     encoder_visualizer: Optional[EncoderVisualizer]
     decoder: Decoder
@@ -199,8 +198,8 @@ class ModelWrapper(LightningModule):
             )
 
         (scene,) = batch["scene"]
-        name = get_cfg()["wandb"]["name"]
-        path = self.test_cfg.output_path / name
+        # Use experiment name from test config instead of wandb
+        path = self.test_cfg.output_path / self.test_cfg.experiment_name
         images_prob = output.color[0]
         rgb_gt = batch["target"]["image"][0]
 
@@ -267,8 +266,8 @@ class ModelWrapper(LightningModule):
             )
 
     def on_test_end(self) -> None:
-        name = get_cfg()["wandb"]["name"]
-        out_dir = self.test_cfg.output_path / name
+        # Use experiment name from test config instead of wandb
+        out_dir = self.test_cfg.output_path / self.test_cfg.experiment_name
         saved_scores = {}
         if self.test_cfg.compute_scores:
             self.benchmarker.dump_memory(out_dir / "peak_memory.json")
@@ -294,9 +293,9 @@ class ModelWrapper(LightningModule):
                 json.dump(saved_scores, f)
             self.benchmarker.clear_history()
         else:
-            self.benchmarker.dump(self.test_cfg.output_path / name / "benchmark.json")
+            self.benchmarker.dump(self.test_cfg.output_path / self.test_cfg.experiment_name / "benchmark.json")
             self.benchmarker.dump_memory(
-                self.test_cfg.output_path / name / "peak_memory.json"
+                self.test_cfg.output_path / self.test_cfg.experiment_name / "peak_memory.json"
             )
             self.benchmarker.summarize()
 

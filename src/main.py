@@ -5,14 +5,13 @@ from typing import Literal
 import warnings
 
 import torch
-import wandb
 from colorama import Fore
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
 )
-from pytorch_lightning.loggers.wandb import WandbLogger
+from pytorch_lightning.loggers import Logger
 
 # Standard imports (previously inside install_import_hook)
 from src.dataset.config import DatasetCfg, DataLoaderCfg, DataLoaderStageCfg
@@ -74,14 +73,7 @@ class ExperimentConfig:
     
     # Output configuration
     output_dir: str | None = None
-    
-    # Logging configuration (WandB)
-    wandb_mode: Literal["online", "offline", "disabled"] = "disabled"
-    wandb_entity: str | None = None
-    wandb_project: str = "mvsplat-medical"
-    wandb_name: str = "medical-experiment"
-    wandb_tags: list[str] = field(default_factory=list)
-    wandb_id: str | None = None
+    experiment_name: str = "medical-experiment"  # Name for organizing outputs
     
     # Test configuration
     test_output_path: str = "outputs/test_results"
@@ -142,12 +134,13 @@ class ExperimentConfig:
     loss_depth_use_second_derivative: bool = False
 
 
-def setup_infrastructure(cfg: ExperimentConfig) -> tuple[WandbLogger | LocalLogger, list]:
+
+def setup_infrastructure(cfg: ExperimentConfig) -> tuple[Logger, list]:
     """Set up output directories, logging, and callbacks."""
     
     # Set up the output directory
     if cfg.output_dir is None:
-        output_dir = Path(cfg.checkpoints_dir).parent / "runs" / f"run_{cfg.wandb_name}"
+        output_dir = Path(cfg.checkpoints_dir).parent / "runs" / f"run_{cfg.experiment_name}"
         output_dir.mkdir(parents=True, exist_ok=True)
     else:
         output_dir = Path(cfg.output_dir)
@@ -164,31 +157,10 @@ def setup_infrastructure(cfg: ExperimentConfig) -> tuple[WandbLogger | LocalLogg
     except Exception as e:
         print(f"Warning: Could not create symlink to latest run: {e}")
     
-    # Set up logging with wandb or local logger
+    # Set up logging with local logger only
     callbacks = []
-    if cfg.wandb_mode != "disabled":
-        wandb_extra_kwargs = {}
-        if cfg.wandb_id is not None:
-            wandb_extra_kwargs.update({'id': cfg.wandb_id, 'resume': "must"})
-        
-        logger = WandbLogger(
-            entity=cfg.wandb_entity,
-            project=cfg.wandb_project,
-            mode=cfg.wandb_mode,
-            name=f"{cfg.wandb_name} ({output_dir.parent.name}/{output_dir.name})",
-            tags=cfg.wandb_tags if cfg.wandb_tags else None,
-            log_model=False,
-            save_dir=output_dir,
-            config=cfg.__dict__,
-            **wandb_extra_kwargs,
-        )
-        callbacks.append(LearningRateMonitor("step", True))
-        
-        # On rank != 0, wandb.run is None
-        if wandb.run is not None:
-            wandb.run.log_code("src")
-    else:
-        logger = LocalLogger()
+    logger = LocalLogger()
+    print(cyan("Using LocalLogger for experiment tracking."))
     
     # Set up checkpointing
     checkpoint_dir = output_dir / "checkpoints"
@@ -291,6 +263,7 @@ def build_configs(cfg: ExperimentConfig):
         wo_backbone_cross_attn=cfg.wo_backbone_cross_attn,
         wo_cost_volume_refine=cfg.wo_cost_volume_refine,
         use_epipolar_trans=cfg.use_epipolar_trans,
+        num_context_views=cfg.num_context_views,
     )
     
     # Decoder configuration
@@ -327,6 +300,7 @@ def build_configs(cfg: ExperimentConfig):
         save_image=cfg.save_image,
         save_video=cfg.save_video,
         eval_time_skip_steps=cfg.eval_time_skip_steps,
+        experiment_name=cfg.experiment_name,
     )
     
     # Train configuration

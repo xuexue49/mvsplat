@@ -1,3 +1,8 @@
+"""
+DEPRECATED: This script uses the old Hydra configuration system and view_sampler module.
+It is not compatible with the refactored medical imaging codebase.
+This file is kept for reference only and will not run without significant modifications.
+"""
 from pathlib import Path
 
 import hydra

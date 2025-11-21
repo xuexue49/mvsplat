@@ -56,6 +56,7 @@ class EncoderCostVolumeCfg:
     wo_backbone_cross_attn: bool
     wo_cost_volume_refine: bool
     use_epipolar_trans: bool
+    num_context_views: int = 2  # Number of context views for multi-view processing
 
 
 class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
@@ -69,7 +70,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         # multi-view Transformer backbone
         if cfg.use_epipolar_trans:
             self.epipolar_sampler = EpipolarSampler(
-                num_views=get_cfg().dataset.view_sampler.num_context_views,
+                num_views=cfg.num_context_views,
                 num_samples=32,
             )
             self.depth_encoding = nn.Sequential(
@@ -83,22 +84,22 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             use_epipolar_trans=cfg.use_epipolar_trans,
         )
         ckpt_path = cfg.unimatch_weights_path
-        if get_cfg().mode == 'train':
-            if cfg.unimatch_weights_path is None:
-                print("==> Init multi-view transformer backbone from scratch")
-            else:
-                print("==> Load multi-view transformer backbone checkpoint: %s" % ckpt_path)
-                unimatch_pretrained_model = torch.load(ckpt_path)["model"]
-                updated_state_dict = OrderedDict(
-                    {
-                        k: v
-                        for k, v in unimatch_pretrained_model.items()
-                        if k in self.backbone.state_dict()
-                    }
-                )
-                # NOTE: when wo cross attn, we added ffns into self-attn, but they have no pretrained weight
-                is_strict_loading = not cfg.wo_backbone_cross_attn
-                self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
+        # Always print initialization message
+        if cfg.unimatch_weights_path is None:
+            print("==> Init multi-view transformer backbone from scratch")
+        else:
+            print("==> Load multi-view transformer backbone checkpoint: %s" % ckpt_path)
+            unimatch_pretrained_model = torch.load(ckpt_path)["model"]
+            updated_state_dict = OrderedDict(
+                {
+                    k: v
+                    for k, v in unimatch_pretrained_model.items()
+                    if k in self.backbone.state_dict()
+                }
+            )
+            # NOTE: when wo cross attn, we added ffns into self-attn, but they have no pretrained weight
+            is_strict_loading = not cfg.wo_backbone_cross_attn
+            self.backbone.load_state_dict(updated_state_dict, strict=is_strict_loading)
 
         # gaussians convertor
         self.gaussian_adapter = GaussianAdapter(cfg.gaussian_adapter)
@@ -113,7 +114,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             costvolume_unet_attn_res=tuple(cfg.costvolume_unet_attn_res),
             gaussian_raw_channels=cfg.num_surfaces * (self.gaussian_adapter.d_in + 2),
             gaussians_per_pixel=cfg.gaussians_per_pixel,
-            num_views=get_cfg().dataset.view_sampler.num_context_views,
+            num_views=cfg.num_context_views,
             depth_unet_feat_dim=cfg.depth_unet_feat_dim,
             depth_unet_attn_res=cfg.depth_unet_attn_res,
             depth_unet_channel_mult=cfg.depth_unet_channel_mult,
