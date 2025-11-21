@@ -32,23 +32,16 @@ def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
 
 
-def setup_infrastructure(
-    cfg_dict: DictConfig, cfg: RootCfg
-) -> tuple[Path, WandbLogger | LocalLogger, list[Callback], str | None]:
+def get_output_dir(cfg_dict: DictConfig) -> Path:
     """
-    设置基础设施，包括输出目录、日志记录器和检查点回调。
+    获取输出目录。
     
     Args:
         cfg_dict: Hydra的DictConfig对象。
-        cfg: 类型化的RootCfg对象。
         
     Returns:
         output_dir: 输出目录路径。
-        logger: WandbLogger或LocalLogger实例。
-        callbacks: 回调列表。
-        checkpoint_path: 检查点路径（如果有）。
     """
-    # Set up the output directory.
     if cfg_dict.output_dir is None:
         output_dir = Path(
             hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
@@ -57,12 +50,20 @@ def setup_infrastructure(
         output_dir = Path(cfg_dict.output_dir)
         os.makedirs(output_dir, exist_ok=True)
     print(cyan(f"Saving outputs to {output_dir}."))
-    latest_run = output_dir.parents[1] / "latest-run"
-    os.system(f"rm {latest_run}")
-    os.system(f"ln -s {output_dir} {latest_run}")
+    return output_dir
 
-    # Set up logging with wandb.
-    callbacks = []
+
+def get_logger(cfg_dict: DictConfig, output_dir: Path) -> WandbLogger | LocalLogger:
+    """
+    获取日志记录器。
+    
+    Args:
+        cfg_dict: Hydra的DictConfig对象。
+        output_dir: 输出目录路径。
+        
+    Returns:
+        logger: WandbLogger或LocalLogger实例。
+    """
     if cfg_dict.wandb.mode != "disabled":
         wandb_extra_kwargs = {}
         if cfg_dict.wandb.id is not None:
@@ -79,15 +80,30 @@ def setup_infrastructure(
             config=OmegaConf.to_container(cfg_dict),
             **wandb_extra_kwargs,
         )
-        callbacks.append(LearningRateMonitor("step", True))
 
         # On rank != 0, wandb.run is None.
         if wandb.run is not None:
             wandb.run.log_code("src")
     else:
         logger = LocalLogger()
+    return logger
 
-    # Set up checkpointing.
+
+def get_callbacks(cfg: RootCfg, output_dir: Path) -> list[Callback]:
+    """
+    获取回调列表。
+    
+    Args:
+        cfg: 类型化的RootCfg对象。
+        output_dir: 输出目录路径。
+        
+    Returns:
+        callbacks: 回调列表。
+    """
+    callbacks = []
+    if cfg.wandb["mode"] != "disabled":
+        callbacks.append(LearningRateMonitor("step", True))
+
     callbacks.append(
         ModelCheckpoint(
             output_dir / "checkpoints",
@@ -99,11 +115,7 @@ def setup_infrastructure(
     )
     for cb in callbacks:
         cb.CHECKPOINT_EQUALS_CHAR = '_'
-
-    # Prepare the checkpoint for loading.
-    checkpoint_path = update_checkpoint_path(cfg.checkpointing.load, cfg.wandb)
-    
-    return output_dir, logger, callbacks, checkpoint_path
+    return callbacks
 
 
 def setup_training_components(
@@ -193,7 +205,10 @@ def train(cfg_dict: DictConfig):
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
 
-    output_dir, logger, callbacks, checkpoint_path = setup_infrastructure(cfg_dict, cfg)
+    output_dir = get_output_dir(cfg_dict)
+    logger = get_logger(cfg_dict, output_dir)
+    callbacks = get_callbacks(cfg, output_dir)
+    checkpoint_path = update_checkpoint_path(cfg.checkpointing.load, cfg.wandb)
 
     trainer, model_wrapper, data_module = setup_training_components(
         cfg, cfg_dict, logger, callbacks, checkpoint_path
