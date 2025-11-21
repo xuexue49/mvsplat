@@ -23,12 +23,11 @@ with install_import_hook(
     from src.config import load_typed_root_config
     from src.dataset.data_module import DataModule
     from src.global_cfg import set_cfg
-    from src.loss import get_losses
+    from src.factory import get_decoder, get_encoder, get_losses
+
     from src.misc.LocalLogger import LocalLogger
     from src.misc.step_tracker import StepTracker
     from src.misc.wandb_tools import update_checkpoint_path
-    from src.model.decoder import get_decoder
-    from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
 
 
@@ -39,7 +38,7 @@ def cyan(text: str) -> str:
 @hydra.main(
     version_base=None,
     config_path="../config",
-    config_name="main",
+    config_name="medical",
 )
 def train(cfg_dict: DictConfig):
     cfg = load_typed_root_config(cfg_dict)

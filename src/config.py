@@ -1,16 +1,16 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Type, TypeVar
+from typing import Literal, Optional, Type, TypeVar, Union
 
 from dacite import Config, from_dict
 from omegaconf import DictConfig, OmegaConf
 
-from .dataset.data_module import DataLoaderCfg, DatasetCfg
-from .loss import LossCfgWrapper
-from .model.decoder import DecoderCfg
-from .model.encoder import EncoderCfg
-from .model.model_wrapper import OptimizerCfg, TestCfg, TrainCfg
-
+from src.dataset.config import DatasetCfg, DataLoaderCfg
+from src.loss.loss_mse import LossMseCfgWrapper
+from src.loss.loss_depth import LossDepthCfgWrapper
+from src.model.decoder.decoder_splatting_cuda import DecoderSplattingCUDACfg
+from src.model.encoder.encoder_costvolume import EncoderCostVolumeCfg
+from src.model.model_wrapper import OptimizerCfg, TestCfg, TrainCfg
 
 @dataclass
 class CheckpointingCfg:
@@ -20,12 +20,12 @@ class CheckpointingCfg:
     pretrained_model: Optional[str]
     resume: Optional[bool] = True
 
-
 @dataclass
 class ModelCfg:
-    decoder: DecoderCfg
-    encoder: EncoderCfg
+    decoder: DecoderSplattingCUDACfg
+    encoder: EncoderCostVolumeCfg
 
+LossCfgWrapper = Union[LossMseCfgWrapper, LossDepthCfgWrapper]
 
 @dataclass
 class TrainerCfg:
@@ -34,7 +34,6 @@ class TrainerCfg:
     gradient_clip_val: int | float | None
     num_sanity_val_steps: int
     num_nodes: Optional[int] = 1
-
 
 @dataclass
 class RootCfg:
@@ -51,14 +50,11 @@ class RootCfg:
     train: TrainCfg
     seed: int
 
-
 TYPE_HOOKS = {
     Path: Path,
 }
 
-
 T = TypeVar("T")
-
 
 def load_typed_config(
     cfg: DictConfig,
@@ -71,7 +67,6 @@ def load_typed_config(
         config=Config(type_hooks={**TYPE_HOOKS, **extra_type_hooks}),
     )
 
-
 def separate_loss_cfg_wrappers(joined: dict) -> list[LossCfgWrapper]:
     # The dummy allows the union to be converted.
     @dataclass
@@ -82,7 +77,6 @@ def separate_loss_cfg_wrappers(joined: dict) -> list[LossCfgWrapper]:
         load_typed_config(DictConfig({"dummy": {k: v}}), Dummy).dummy
         for k, v in joined.items()
     ]
-
 
 def load_typed_root_config(cfg: DictConfig) -> RootCfg:
     return load_typed_config(

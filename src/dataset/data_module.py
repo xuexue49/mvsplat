@@ -8,11 +8,11 @@ from pytorch_lightning import LightningDataModule
 from torch import Generator, nn
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
-from ..misc.step_tracker import StepTracker
-from . import DatasetCfg, get_dataset
-from .types import DataShim, Stage
-from .validation_wrapper import ValidationWrapper
-
+from src.misc.step_tracker import StepTracker
+from src.dataset.config import DatasetCfg, DataLoaderCfg, DataLoaderStageCfg
+from src.dataset.types import DataShim, Stage
+from src.dataset.validation_wrapper import ValidationWrapper
+from src.dataset.dataset_medical import MedicalDataset
 
 def get_data_shim(encoder: nn.Module) -> DataShim:
     """Get functions that modify the batch. It's sometimes necessary to modify batches
@@ -31,29 +31,11 @@ def get_data_shim(encoder: nn.Module) -> DataShim:
 
     return combined_shim
 
-
-@dataclass
-class DataLoaderStageCfg:
-    batch_size: int
-    num_workers: int
-    persistent_workers: bool
-    seed: int | None
-
-
-@dataclass
-class DataLoaderCfg:
-    train: DataLoaderStageCfg
-    test: DataLoaderStageCfg
-    val: DataLoaderStageCfg
-
-
 DatasetShim = Callable[[Dataset, Stage], Dataset]
-
 
 def worker_init_fn(worker_id: int) -> None:
     random.seed(int(torch.utils.data.get_worker_info().seed) % (2**32 - 1))
     np.random.seed(int(torch.utils.data.get_worker_info().seed) % (2**32 - 1))
-
 
 class DataModule(LightningDataModule):
     dataset_cfg: DatasetCfg
@@ -88,7 +70,12 @@ class DataModule(LightningDataModule):
         return generator
 
     def train_dataloader(self):
-        dataset = get_dataset(self.dataset_cfg, "train", self.step_tracker)
+        dataset = MedicalDataset(
+            dataset_path=self.dataset_cfg.dataset_path,
+            image_shape=self.dataset_cfg.image_shape,
+            num_context_views=self.dataset_cfg.num_context_views,
+            split="train",
+        )
         dataset = self.dataset_shim(dataset, "train")
         return DataLoader(
             dataset,
@@ -101,7 +88,12 @@ class DataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
-        dataset = get_dataset(self.dataset_cfg, "val", self.step_tracker)
+        dataset = MedicalDataset(
+            dataset_path=self.dataset_cfg.dataset_path,
+            image_shape=self.dataset_cfg.image_shape,
+            num_context_views=self.dataset_cfg.num_context_views,
+            split="val",
+        )
         dataset = self.dataset_shim(dataset, "val")
         return DataLoader(
             ValidationWrapper(dataset, 1),
@@ -113,10 +105,12 @@ class DataModule(LightningDataModule):
         )
 
     def test_dataloader(self, dataset_cfg=None):
-        dataset = get_dataset(
-            self.dataset_cfg if dataset_cfg is None else dataset_cfg,
-            "test",
-            self.step_tracker,
+        cfg = self.dataset_cfg if dataset_cfg is None else dataset_cfg
+        dataset = MedicalDataset(
+            dataset_path=cfg.dataset_path,
+            image_shape=cfg.image_shape,
+            num_context_views=cfg.num_context_views,
+            split="test",
         )
         dataset = self.dataset_shim(dataset, "test")
         return DataLoader(

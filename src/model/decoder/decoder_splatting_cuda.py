@@ -6,7 +6,7 @@ from einops import rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor
 
-from ...dataset import DatasetCfg
+from ...dataset.config import DatasetCfg
 from ..types import Gaussians
 from .cuda_splatting import DepthRenderingMode, render_cuda, render_depth_cuda
 from .decoder import Decoder, DecoderOutput

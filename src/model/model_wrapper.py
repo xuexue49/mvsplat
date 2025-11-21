@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
-import moviepy.editor as mpy
 import torch
 import wandb
 from einops import pack, rearrange, repeat
@@ -16,12 +15,12 @@ import json
 
 from ..dataset.data_module import get_data_shim
 from ..dataset.types import BatchedExample
-from ..dataset import DatasetCfg
-from ..evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
+from ..dataset.config import DatasetCfg
+from ..evaluation.metrics import compute_psnr, compute_ssim
 from ..global_cfg import get_cfg
-from ..loss import Loss
+from ..loss.loss import Loss
 from ..misc.benchmarker import Benchmarker
-from ..misc.image_io import prep_image, save_image, save_video
+from ..misc.image_io import prep_image, save_image, save_ply
 from ..misc.LocalLogger import LOG_PATH, LocalLogger
 from ..misc.step_tracker import StepTracker
 from ..visualization.annotation import add_label
@@ -38,7 +37,7 @@ from ..visualization.layout import add_border, hcat, vcat
 from ..visualization import layout
 from ..visualization.validation_in_3d import render_cameras, render_projections
 from .decoder.decoder import Decoder, DepthRenderingMode
-from .encoder import Encoder
+from .encoder.encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 
 
@@ -196,7 +195,7 @@ class ModelWrapper(LightningModule):
                 batch["target"]["near"],
                 batch["target"]["far"],
                 (h, w),
-                depth_mode=None,
+                depth_mode="depth",
             )
 
         (scene,) = batch["scene"]
@@ -210,13 +209,42 @@ class ModelWrapper(LightningModule):
             for index, color in zip(batch["target"]["index"][0], images_prob):
                 save_image(color, path / scene / f"color/{index:0>6}.png")
 
-        # save video
-        if self.test_cfg.save_video:
-            frame_str = "_".join([str(x.item()) for x in batch["context"]["index"][0]])
-            save_video(
-                [a for a in images_prob],
-                path / "video" / f"{scene}_frame_{frame_str}.mp4",
-            )
+        # Save depth
+        if output.depth is not None:
+             for index, depth in zip(batch["target"]["index"][0], output.depth[0]):
+                 # Normalize depth for visualization or save raw?
+                 # Saving raw as .npy or normalized png?
+                 # User said "Depth map (optional)". Usually visualization.
+                 # I'll save as normalized PNG for visualization.
+                 # Simple min-max normalization per image
+                 d_min = depth.min()
+                 d_max = depth.max()
+                 depth_norm = (depth - d_min) / (d_max - d_min + 1e-8)
+                 save_image(depth_norm, path / scene / f"depth/{index:0>6}.png")
+
+        # Save Point Cloud
+        # Extract means and colors (DC SH)
+        # gaussians: [batch, gaussian, ...]
+        # We assume batch size 1 for test
+        means = gaussians.means[0]
+        sh = gaussians.harmonics[0]
+        # DC component is the first one. SH features are usually (r, g, b, ...)
+        # MVSplat harmonics: [b, g, 3, d_sh] or [b, g, d_sh, 3]?
+        # In encoder_costvolume.py:
+        # gaussians.harmonics: "b v r srf spp c d_sh -> b (v r srf spp) c d_sh"
+        # So it's [batch, gaussian, 3, d_sh]
+        # DC is index 0 in d_sh
+        colors = sh[..., 0] # [gaussian, 3]
+        # SH DC component needs to be converted to RGB.
+        # 0.28209479177387814 is the SH constant for DC (Y_00)
+        # RGB = SH_0 * 0.282... + 0.5 (if offset)
+        # Usually 3DGS stores SH coefficients directly.
+        # To get RGB, we just take the DC component and apply the constant.
+        # Actually, let's just save the raw DC as color proxy.
+        # But we need to apply sigmoid or similar if it's not raw RGB.
+        # 3DGS usually requires processing.
+        # For simplicity, I'll just save means.
+        save_ply(means, None, path / scene / "point_cloud.ply")
 
         # compute scores
         if self.test_cfg.compute_scores:
@@ -229,17 +257,13 @@ class ModelWrapper(LightningModule):
                 self.test_step_outputs[f"psnr"] = []
             if f"ssim" not in self.test_step_outputs:
                 self.test_step_outputs[f"ssim"] = []
-            if f"lpips" not in self.test_step_outputs:
-                self.test_step_outputs[f"lpips"] = []
+
 
             self.test_step_outputs[f"psnr"].append(
                 compute_psnr(rgb_gt, rgb).mean().item()
             )
             self.test_step_outputs[f"ssim"].append(
                 compute_ssim(rgb_gt, rgb).mean().item()
-            )
-            self.test_step_outputs[f"lpips"].append(
-                compute_lpips(rgb_gt, rgb).mean().item()
             )
 
     def on_test_end(self) -> None:
@@ -312,8 +336,6 @@ class ModelWrapper(LightningModule):
         ):
             psnr = compute_psnr(rgb_gt, rgb).mean()
             self.log(f"val/psnr_{tag}", psnr)
-            lpips = compute_lpips(rgb_gt, rgb).mean()
-            self.log(f"val/lpips_{tag}", lpips)
             ssim = compute_ssim(rgb_gt, rgb).mean()
             self.log(f"val/ssim_{tag}", ssim)
 
@@ -354,188 +376,11 @@ class ModelWrapper(LightningModule):
             ).items():
                 self.logger.log_image(k, [prep_image(image)], step=self.global_step)
 
-        # Run video validation step.
-        self.render_video_interpolation(batch)
-        self.render_video_wobble(batch)
-        if self.train_cfg.extended_visualization:
-            self.render_video_interpolation_exaggerated(batch)
+        # Video rendering removed
 
-    @rank_zero_only
-    def render_video_wobble(self, batch: BatchedExample) -> None:
-        # Two views are needed to get the wobble radius.
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-        if v != 2:
-            return
 
-        def trajectory_fn(t):
-            origin_a = batch["context"]["extrinsics"][:, 0, :3, 3]
-            origin_b = batch["context"]["extrinsics"][:, 1, :3, 3]
-            delta = (origin_a - origin_b).norm(dim=-1)
-            extrinsics = generate_wobble(
-                batch["context"]["extrinsics"][:, 0],
-                delta * 0.25,
-                t,
-            )
-            intrinsics = repeat(
-                batch["context"]["intrinsics"][:, 0],
-                "b i j -> b v i j",
-                v=t.shape[0],
-            )
-            return extrinsics, intrinsics
+    # Video rendering methods removed for medical imaging refactoring
 
-        return self.render_video_generic(batch, trajectory_fn, "wobble", num_frames=60)
-
-    @rank_zero_only
-    def render_video_interpolation(self, batch: BatchedExample) -> None:
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-
-        def trajectory_fn(t):
-            extrinsics = interpolate_extrinsics(
-                batch["context"]["extrinsics"][0, 0],
-                (
-                    batch["context"]["extrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["extrinsics"][0, 0]
-                ),
-                t,
-            )
-            intrinsics = interpolate_intrinsics(
-                batch["context"]["intrinsics"][0, 0],
-                (
-                    batch["context"]["intrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["intrinsics"][0, 0]
-                ),
-                t,
-            )
-            return extrinsics[None], intrinsics[None]
-
-        return self.render_video_generic(batch, trajectory_fn, "rgb")
-
-    @rank_zero_only
-    def render_video_interpolation_exaggerated(self, batch: BatchedExample) -> None:
-        # Two views are needed to get the wobble radius.
-        _, v, _, _ = batch["context"]["extrinsics"].shape
-        if v != 2:
-            return
-
-        def trajectory_fn(t):
-            origin_a = batch["context"]["extrinsics"][:, 0, :3, 3]
-            origin_b = batch["context"]["extrinsics"][:, 1, :3, 3]
-            delta = (origin_a - origin_b).norm(dim=-1)
-            tf = generate_wobble_transformation(
-                delta * 0.5,
-                t,
-                5,
-                scale_radius_with_t=False,
-            )
-            extrinsics = interpolate_extrinsics(
-                batch["context"]["extrinsics"][0, 0],
-                (
-                    batch["context"]["extrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["extrinsics"][0, 0]
-                ),
-                t * 5 - 2,
-            )
-            intrinsics = interpolate_intrinsics(
-                batch["context"]["intrinsics"][0, 0],
-                (
-                    batch["context"]["intrinsics"][0, 1]
-                    if v == 2
-                    else batch["target"]["intrinsics"][0, 0]
-                ),
-                t * 5 - 2,
-            )
-            return extrinsics @ tf, intrinsics[None]
-
-        return self.render_video_generic(
-            batch,
-            trajectory_fn,
-            "interpolation_exagerrated",
-            num_frames=300,
-            smooth=False,
-            loop_reverse=False,
-        )
-
-    @rank_zero_only
-    def render_video_generic(
-        self,
-        batch: BatchedExample,
-        trajectory_fn: TrajectoryFn,
-        name: str,
-        num_frames: int = 30,
-        smooth: bool = True,
-        loop_reverse: bool = True,
-    ) -> None:
-        # Render probabilistic estimate of scene.
-        gaussians_prob = self.encoder(batch["context"], self.global_step, False)
-        # gaussians_det = self.encoder(batch["context"], self.global_step, True)
-
-        t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
-        if smooth:
-            t = (torch.cos(torch.pi * (t + 1)) + 1) / 2
-
-        extrinsics, intrinsics = trajectory_fn(t)
-
-        _, _, _, h, w = batch["context"]["image"].shape
-
-        # Color-map the result.
-        def depth_map(result):
-            near = result[result > 0][:16_000_000].quantile(0.01).log()
-            far = result.view(-1)[:16_000_000].quantile(0.99).log()
-            result = result.log()
-            result = 1 - (result - near) / (far - near)
-            return apply_color_map_to_image(result, "turbo")
-
-        # TODO: Interpolate near and far planes?
-        near = repeat(batch["context"]["near"][:, 0], "b -> b v", v=num_frames)
-        far = repeat(batch["context"]["far"][:, 0], "b -> b v", v=num_frames)
-        output_prob = self.decoder.forward(
-            gaussians_prob, extrinsics, intrinsics, near, far, (h, w), "depth"
-        )
-        images_prob = [
-            vcat(rgb, depth)
-            for rgb, depth in zip(output_prob.color[0], depth_map(output_prob.depth[0]))
-        ]
-        # output_det = self.decoder.forward(
-        #     gaussians_det, extrinsics, intrinsics, near, far, (h, w), "depth"
-        # )
-        # images_det = [
-        #     vcat(rgb, depth)
-        #     for rgb, depth in zip(output_det.color[0], depth_map(output_det.depth[0]))
-        # ]
-        images = [
-            add_border(
-                hcat(
-                    add_label(image_prob, "Softmax"),
-                    # add_label(image_det, "Deterministic"),
-                )
-            )
-            for image_prob, _ in zip(images_prob, images_prob)
-        ]
-
-        video = torch.stack(images)
-        video = (video.clip(min=0, max=1) * 255).type(torch.uint8).cpu().numpy()
-        if loop_reverse:
-            video = pack([video, video[::-1][1:-1]], "* c h w")[0]
-        visualizations = {
-            f"video/{name}": wandb.Video(video[None], fps=30, format="mp4")
-        }
-
-        # Since the PyTorch Lightning doesn't support video logging, log to wandb directly.
-        try:
-            wandb.log(visualizations)
-        except Exception:
-            assert isinstance(self.logger, LocalLogger)
-            for key, value in visualizations.items():
-                tensor = value._prepare_video(value.data)
-                clip = mpy.ImageSequenceClip(list(tensor), fps=value._fps)
-                dir = LOG_PATH / key
-                dir.mkdir(exist_ok=True, parents=True)
-                clip.write_videofile(
-                    str(dir / f"{self.global_step:0>6}.mp4"), logger=None
-                )
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.optimizer_cfg.lr)

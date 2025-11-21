@@ -5,7 +5,7 @@ from typing import Generic, Literal, TypeVar
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from ...dataset import DatasetCfg
+from ...dataset.config import DatasetCfg
 from ..types import Gaussians
 
 DepthRenderingMode = Literal[

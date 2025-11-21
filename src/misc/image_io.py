@@ -1,7 +1,7 @@
 import io
 from pathlib import Path
 from typing import Union
-import skvideo.io
+
 
 import numpy as np
 import torch
@@ -74,25 +74,36 @@ def load_image(
     return tf.ToTensor()(Image.open(path))[:3]
 
 
-def save_video(
-    images: list[FloatImage],
+from plyfile import PlyData, PlyElement
+
+def save_ply(
+    means: Float[Tensor, "gaussian 3"],
+    colors: Float[Tensor, "gaussian 3"] | None,
     path: Union[Path, str],
 ) -> None:
-    """Save an image. Assumed to be in range 0-1."""
-
-    # Create the parent directory if it doesn't already exist.
+    """Save a point cloud to a PLY file."""
     path = Path(path)
     path.parent.mkdir(exist_ok=True, parents=True)
 
-    # Save the image.
-    # Image.fromarray(prep_image(image)).save(path)
-    frames = []
-    for image in images:
-        frames.append(prep_image(image))
+    means = means.detach().cpu().numpy()
+    if colors is not None:
+        colors = colors.detach().cpu().numpy()
+        # Ensure colors are 0-255 uint8
+        if colors.max() <= 1.0:
+            colors = (colors * 255).clip(0, 255).astype(np.uint8)
+        else:
+            colors = colors.clip(0, 255).astype(np.uint8)
+        
+        vertices = np.empty(len(means), dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4'), 
+                                               ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+        vertices['x'] = means[:, 0]
+        vertices['y'] = means[:, 1]
+        vertices['z'] = means[:, 2]
+        vertices['red'] = colors[:, 0]
+        vertices['green'] = colors[:, 1]
+        vertices['blue'] = colors[:, 2]
+    else:
+        vertices = np.array([tuple(v) for v in means], dtype=[('x', 'f4'), ('y', 'f4'), ('z', 'f4')])
 
-    writer = skvideo.io.FFmpegWriter(path, 
-                                     outputdict={'-pix_fmt': 'yuv420p', '-crf': '21', 
-                                                 '-vf': f'setpts=1.*PTS'})
-    for frame in frames:
-        writer.writeFrame(frame)
-    writer.close()
+    el = PlyElement.describe(vertices, 'vertex')
+    PlyData([el]).write(str(path))

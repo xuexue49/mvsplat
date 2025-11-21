@@ -7,12 +7,10 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from collections import OrderedDict
 
-from ...dataset.shims.bounds_shim import apply_bounds_shim
-from ...dataset.shims.patch_shim import apply_patch_shim
 from ...dataset.types import BatchedExample, DataShim
 from ...geometry.projection import sample_image_grid
 from ..types import Gaussians
-from .backbone import (
+from .backbone.backbone_multiview import (
     BackboneMultiview,
 )
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
@@ -247,21 +245,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
         )
 
     def get_data_shim(self) -> DataShim:
-        def data_shim(batch: BatchedExample) -> BatchedExample:
-            batch = apply_patch_shim(
-                batch,
-                patch_size=self.cfg.shim_patch_size
-                * self.cfg.downscale_factor,
-            )
-
-            # if self.cfg.apply_bounds_shim:
-            #     _, _, _, h, w = batch["context"]["image"].shape
-            #     near_disparity = self.cfg.near_disparity * min(h, w)
-            #     batch = apply_bounds_shim(batch, near_disparity, self.cfg.far_disparity)
-
-            return batch
-
-        return data_shim
+        return lambda x: x
 
     @property
     def sampler(self):
