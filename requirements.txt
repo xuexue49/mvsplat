@@ -1,4 +1,6 @@
 wheel
+torch
+torchvision
 tqdm
 pytorch_lightning
 black
@@ -21,3 +23,8 @@ plyfile
 tabulate
 svg.py
 opencv-python==4.6.0.66
+
+# Medical imaging libraries
+pydicom
+nibabel
+Pillow
