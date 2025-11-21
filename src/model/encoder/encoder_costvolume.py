@@ -20,7 +20,7 @@ from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .visualization.encoder_visualizer_costvolume_cfg import EncoderVisualizerCostVolumeCfg
 
-from ...global_cfg import get_cfg
+
 
 from .epipolar.epipolar_sampler import EpipolarSampler
 from ..encodings.positional_encoding import PositionalEncoding
@@ -65,13 +65,14 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
     depth_predictor:  DepthPredictorMultiView
     gaussian_adapter: GaussianAdapter
 
-    def __init__(self, cfg: EncoderCostVolumeCfg) -> None:
+    def __init__(self, cfg: EncoderCostVolumeCfg, cfg_dict: dict) -> None:
         super().__init__(cfg)
+        self.cfg_dict = cfg_dict
 
         # multi-view Transformer backbone
         if cfg.use_epipolar_trans:
             self.epipolar_sampler = EpipolarSampler(
-                num_views=get_cfg().dataset.view_sampler.num_context_views,
+                num_views=self.cfg_dict["dataset"]["view_sampler"]["num_context_views"],
                 num_samples=32,
             )
             self.depth_encoding = nn.Sequential(
@@ -85,7 +86,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             use_epipolar_trans=cfg.use_epipolar_trans,
         )
         ckpt_path = cfg.unimatch_weights_path
-        if get_cfg().mode == 'train':
+        if self.cfg_dict["mode"] == 'train':
             if cfg.unimatch_weights_path is None:
                 print("==> Init multi-view transformer backbone from scratch")
             else:
@@ -115,7 +116,7 @@ class EncoderCostVolume(Encoder[EncoderCostVolumeCfg]):
             costvolume_unet_attn_res=tuple(cfg.costvolume_unet_attn_res),
             gaussian_raw_channels=cfg.num_surfaces * (self.gaussian_adapter.d_in + 2),
             gaussians_per_pixel=cfg.gaussians_per_pixel,
-            num_views=get_cfg().dataset.view_sampler.num_context_views,
+            num_views=self.cfg_dict["dataset"]["view_sampler"]["num_context_views"],
             depth_unet_feat_dim=cfg.depth_unet_feat_dim,
             depth_unet_attn_res=cfg.depth_unet_attn_res,
             depth_unet_channel_mult=cfg.depth_unet_channel_mult,

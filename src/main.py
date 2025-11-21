@@ -18,7 +18,6 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 
 from src.config import RootCfg, load_typed_root_config
 from src.dataset.data_module import DataModule
-from src.global_cfg import set_cfg
 from src.loss import get_losses
 from src.misc.LocalLogger import LocalLogger
 from src.misc.step_tracker import StepTracker
@@ -164,7 +163,7 @@ def setup_training_components(
     )
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
 
-    encoder, encoder_visualizer = get_encoder(cfg.model.encoder)
+    encoder, encoder_visualizer = get_encoder(cfg.model.encoder, OmegaConf.to_container(cfg_dict))
 
     model_kwargs = {
         "optimizer_cfg": cfg.optimizer,
@@ -175,6 +174,7 @@ def setup_training_components(
         "decoder": get_decoder(cfg.model.decoder, cfg.dataset),
         "losses": get_losses(cfg.loss),
         "step_tracker": step_tracker,
+        "cfg_dict": OmegaConf.to_container(cfg_dict),
     }
     if cfg.mode == "train" and checkpoint_path is not None and not cfg.checkpointing.resume:
         # Just load model weights, without optimizer states
@@ -208,7 +208,6 @@ def train(cfg_dict: DictConfig):
         cfg_dict: Hydra配置对象。
     """
     cfg = load_typed_root_config(cfg_dict)
-    set_cfg(cfg_dict)
 
     output_dir = get_output_dir(cfg_dict)
     logger = get_logger(cfg_dict, output_dir)

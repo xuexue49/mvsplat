@@ -18,7 +18,6 @@ from ..dataset.data_module import get_data_shim
 from ..dataset.types import BatchedExample
 from ..dataset import DatasetCfg
 from ..evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
-from ..global_cfg import get_cfg
 from ..loss import Loss
 from ..misc.benchmarker import Benchmarker
 from ..misc.image_io import save_image, save_video
@@ -59,6 +58,7 @@ class ModelWrapper(LightningModule):
     test_cfg: TestCfg
     train_cfg: TrainCfg
     step_tracker: StepTracker | None
+    cfg_dict: dict  # Store the full config for wandb name access
 
     def __init__(
         self,
@@ -70,6 +70,7 @@ class ModelWrapper(LightningModule):
         decoder: Decoder,
         losses: list[Loss],
         step_tracker: StepTracker | None,
+        cfg_dict: dict,
     ) -> None:
         """
         初始化模型包装器。
@@ -83,12 +84,14 @@ class ModelWrapper(LightningModule):
             decoder: 解码器实例。
             losses: 损失函数列表。
             step_tracker: 步数追踪器（可选）。
+            cfg_dict: Hydra配置字典。
         """
         super().__init__()
         self.optimizer_cfg = optimizer_cfg
         self.test_cfg = test_cfg
         self.train_cfg = train_cfg
         self.step_tracker = step_tracker
+        self.cfg_dict = cfg_dict
 
         # Set up the model.
         self.encoder = encoder
@@ -202,7 +205,7 @@ class ModelWrapper(LightningModule):
             )
 
         (scene,) = batch["scene"]
-        name = get_cfg()["wandb"]["name"]
+        name = self.cfg_dict["wandb"]["name"]
         path = self.test_cfg.output_path / name
         images_prob = output.color[0]
         rgb_gt = batch["target"]["image"][0]
@@ -245,7 +248,7 @@ class ModelWrapper(LightningModule):
             )
 
     def on_test_end(self) -> None:
-        name = get_cfg()["wandb"]["name"]
+        name = self.cfg_dict["wandb"]["name"]
         out_dir = self.test_cfg.output_path / name
         saved_scores = {}
         if self.test_cfg.compute_scores:

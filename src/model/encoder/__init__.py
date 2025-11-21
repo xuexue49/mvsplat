@@ -10,9 +10,9 @@ from .visualization.encoder_visualizer_costvolume import EncoderVisualizerCostVo
 EncoderCfg = EncoderCostVolumeCfg
 
 
-def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:
+def get_encoder(cfg: EncoderCfg, cfg_dict: dict) -> tuple[Encoder, Optional[EncoderVisualizer]]:
     if cfg.name == "costvolume":
-        encoder = EncoderCostVolume(cfg)
+        encoder = EncoderCostVolume(cfg, cfg_dict)
         visualizer = EncoderVisualizerCostVolume(cfg.visualizer, encoder)
         return encoder, visualizer
     raise NotImplementedError(f"Encoder {cfg.name} not implemented")
