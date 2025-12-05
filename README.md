@@ -1,202 +1,89 @@
-<p align="center">
-  <h1 align="center">MVSplat: Efficient 3D Gaussian Splatting <br> from Sparse Multi-View Images</h1>
-  <p align="center">
-    <a href="https://donydchen.github.io/">Yuedong Chen</a>
-    &nbsp;·&nbsp;
-    <a href="https://haofeixu.github.io/">Haofei Xu</a>
-    &nbsp;·&nbsp;
-    <a href="https://chuanxiaz.com/">Chuanxia Zheng</a>
-    &nbsp;·&nbsp;
-    <a href="https://bohanzhuang.github.io/">Bohan Zhuang</a> <br>
-    <a href="https://people.inf.ethz.ch/marc.pollefeys/">Marc Pollefeys</a>
-    &nbsp;·&nbsp;
-    <a href="http://www.cvlibs.net/">Andreas Geiger</a>
-    &nbsp;·&nbsp;
-    <a href="https://personal.ntu.edu.sg/astjcham/">Tat-Jen Cham</a>
-    &nbsp;·&nbsp;
-    <a href="https://jianfei-cai.github.io/">Jianfei Cai</a>
-  </p>
-  <h3 align="center">ECCV 2024 Oral</h3>
-  <h3 align="center"><a href="https://arxiv.org/abs/2403.14627">Paper</a> | <a href="https://donydchen.github.io/mvsplat/">Project Page</a> | <a href="https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU">Pretrained Models</a> </h3>
-<!--   <div align="center">
-    <a href="https://news.ycombinator.com/item?id=41222655">
-      <img
-        alt="Featured on Hacker News"
-        src="https://hackerbadge.vercel.app/api?id=41222655&type=dark"
-      />
-    </a>
-  </div> -->
+# MVSplat: Efficient 3D Gaussian Splatting from Sparse Multi-View Images
 
-<ul>
-<li><b>20/01/25 Update:</b> Check out Cheng's <a href="https://github.com/chengzhag/PanSplat">PanSplat [CVPR '25]</a>, which extends MVSplat to higher resolutions (up to 4K) and highlights the use of a hierarchical spherical cost volume and two-step deferred backpropagation for memory-efficient training. </li>
-<li><b>08/11/24 Update:</b> Explore our <a href="https://github.com/donydchen/mvsplat360">MVSplat360 [NeurIPS '24]</a>, an upgraded MVSplat that combines video diffusion to achieve 360° NVS for large-scale scenes from just 5 input views! </li>  
-<li><b>21/10/24 Update:</b> Check out Haofei's <a href="https://github.com/cvg/depthsplat">DepthSplat [CVPR '25]</a> if you are interested in feed-forward 3DGS on more complex scenes (DL3DV-10K) and more input views (up to 12 views)!</li>
-</ul>
-<br>
-</p>
+> ⚠️ **学习版说明**
+> 
+> 这是 MVSplat 的**简化学习版本**，为了方便理解模型核心逻辑，我们对代码进行了以下简化：
+> 
+> - ✅ **保留核心模块**：Encoder (Cost Volume), Decoder (CUDA Splatting), MSE Loss
+> - ✅ **添加中文注释**：详细解释 Cost Volume、Gaussian Splatting 等关键概念
+> - ✅ **简化训练流程**：移除复杂的视频渲染和多余的可视化
+> - ✅ **最小可视化**：保留基本的图像对比保存功能
+> 
+> 原始完整版本请访问：[donydchen/mvsplat](https://github.com/donydchen/mvsplat)
 
-https://github.com/donydchen/mvsplat/assets/5866866/c5dc5de1-819e-462f-85a2-815e239d8ff2
+---
 
-## Installation
+## 核心架构
 
-To get started, clone this project, create a conda virtual environment using Python 3.10+, and install the requirements:
-
-```bash
-git clone https://github.com/donydchen/mvsplat.git
-cd mvsplat
-conda create -n mvsplat python=3.10
-conda activate mvsplat
-pip install torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 --index-url https://download.pytorch.org/whl/cu118
-pip install -r requirements.txt
+```
+Input Images (B, V, 3, H, W)
+      │
+      ▼
+┌─────────────────────────────────────────────────┐
+│  Encoder (EncoderCostVolume)                    │
+│  ├── Multi-View Transformer: 多视角特征融合      │
+│  ├── Cost Volume: 深度假设匹配代价计算           │
+│  └── Gaussian Adapter: 预测 3D Gaussian 参数    │
+└─────────────────────────────────────────────────┘
+      │
+      ▼
+3D Gaussians (means, covariances, colors, opacities)
+      │
+      ▼
+┌─────────────────────────────────────────────────┐
+│  Decoder (CUDA Splatting)                       │
+│  └── 3D Gaussian Splatting 渲染目标视角          │
+└─────────────────────────────────────────────────┘
+      │
+      ▼
+Output Image (B, V, 3, H, W)
 ```
 
-## Acquiring Datasets
+## 关键文件说明
 
-### RealEstate10K and ACID
+| 文件 | 说明 |
+|------|------|
+| `src/main.py` | 训练入口，包含完整流程注释 |
+| `src/model/model_wrapper.py` | 模型封装，处理训练/验证/测试 |
+| `src/model/encoder/encoder_costvolume.py` | **核心**：Cost Volume 编码器 |
+| `src/model/decoder/cuda_splatting.py` | **核心**：CUDA Gaussian Splatting |
+| `src/loss/__init__.py` | MSE 损失函数 |
 
-Our MVSplat uses the same training datasets as pixelSplat. Below we quote pixelSplat's [detailed instructions](https://github.com/dcharatan/pixelsplat?tab=readme-ov-file#acquiring-datasets) on getting datasets.
+## 快速开始
 
-> pixelSplat was trained using versions of the RealEstate10k and ACID datasets that were split into ~100 MB chunks for use on server cluster file systems. Small subsets of the Real Estate 10k and ACID datasets in this format can be found [here](https://drive.google.com/drive/folders/1joiezNCyQK2BvWMnfwHJpm2V77c7iYGe?usp=sharing). To use them, simply unzip them into a newly created `datasets` folder in the project root directory.
-
-> If you would like to convert downloaded versions of the Real Estate 10k and ACID datasets to our format, you can use the [scripts here](https://github.com/dcharatan/real_estate_10k_tools). Our preprocessed versions of the datasets can be found [here](http://schadenfreude.csail.mit.edu:8000/).
-
-### DTU (For Testing Only)
-
-* Download the preprocessed DTU data [dtu_training.rar](https://drive.google.com/file/d/1eDjh-_bxKKnEuz5h-HXS7EDJn59clx6V/view).
-* Convert DTU to chunks by running `python src/scripts/convert_dtu.py --input_dir PATH_TO_DTU --output_dir datasets/dtu`
-* [Optional] Generate the evaluation index by running `python src/scripts/generate_dtu_evaluation_index.py --n_contexts=N`, where N is the number of context views. (For N=2 and N=3, we have already provided our tested version under `/assets`.)
-
-## Running the Code
-
-### Evaluation
-
-To render novel views and compute evaluation metrics from a pretrained model,
-
-* get the [pretrained models](https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU), and save them to `/checkpoints`
-
-* run the following:
+### 环境配置
 
 ```bash
-# re10k
-python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/re10k.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-test.compute_scores=true
-
-# acid
-python -m src.main +experiment=acid \
-checkpointing.load=checkpoints/acid.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_acid.json \
-test.compute_scores=true
+conda activate mvsplat_medical
 ```
 
-* the rendered novel views will be stored under `outputs/test`
-
-To render videos from a pretrained model, run the following
+### 训练
 
 ```bash
-# re10k
-python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/re10k.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_re10k_video.json \
-test.save_video=true \
-test.save_image=false \
-test.compute_scores=false
-```
-
-### Training
-
-Run the following:
-
-```bash
-# download the backbone pretrained weight from unimatch and save to 'checkpoints/'
+# 下载预训练 backbone 权重
 wget 'https://s3.eu-central-1.amazonaws.com/avg-projects/unimatch/pretrained/gmdepth-scale1-resumeflowthings-scannet-5d9d7964.pth' -P checkpoints
-# train mvsplat
+
+# 开始训练
 python -m src.main +experiment=re10k data_loader.train.batch_size=14
 ```
 
-Our models are trained with a single A100 (80GB) GPU. They can also be trained on multiple GPUs with smaller RAM by setting a smaller `data_loader.train.batch_size` per GPU.
-
-<details>
-  <summary><b>Training on multiple nodes (https://github.com/donydchen/mvsplat/issues/32)</b></summary>
-Since this project is built on top of pytorch_lightning, it can be trained on multiple nodes hosted on the SLURM cluster. For example, to train on 2 nodes (with 2 GPUs on each node), add the following lines to the SLURM job script
+### 测试
 
 ```bash
-#SBATCH --nodes=2           # should match with trainer.num_nodes
-#SBATCH --gres=gpu:2        # gpu per node
-#SBATCH --ntasks-per-node=2
-
-# optional, for debugging
-export NCCL_DEBUG=INFO
-export HYDRA_FULL_ERROR=1
-# optional, set network interface, obtained from ifconfig
-export NCCL_SOCKET_IFNAME=[YOUR NETWORK INTERFACE]
-# optional, set IB GID index
-export NCCL_IB_GID_INDEX=3
-
-# run the command with 'srun'
-srun python -m src.main +experiment=re10k \
-data_loader.train.batch_size=4 \
-trainer.num_nodes=2
-```
-
-References:
-* [Pytorch Lightning: RUN ON AN ON-PREM CLUSTER (ADVANCED)](https://lightning.ai/docs/pytorch/stable/clouds/cluster_advanced.html)
-* [NCCL: How to set NCCL_SOCKET_IFNAME](https://github.com/NVIDIA/nccl/issues/286)
-* [NCCL: NCCL WARN NET/IB](https://github.com/NVIDIA/nccl/issues/426)
-
-</details>
-
-<details>
-  <summary><b>Fine-tune from the released weights (https://github.com/donydchen/mvsplat/issues/45)</b></summary>
-To fine-tune from the released weights <i>without</i> loading the optimizer states, run the following:
-
-```bash
-python -m src.main +experiment=re10k data_loader.train.batch_size=14 \
-checkpointing.load=checkpoints/re10k.ckpt \
-checkpointing.resume=false
-```
-
-</details>
-
-### Ablations
-
-We also provide a collection of our [ablation models](https://drive.google.com/drive/folders/14_E_5R6ojOWnLSrSVLVEMHnTiKsfddjU) (under folder 'ablations'). To evaluate them, *e.g.*, the 'base' model, run the following command
-
-```bash
-# Table 3: base
 python -m src.main +experiment=re10k \
-checkpointing.load=checkpoints/ablations/re10k_worefine.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-test.compute_scores=true \
-wandb.name=abl/re10k_base \
-model.encoder.wo_depth_refine=true 
+  checkpointing.load=checkpoints/re10k.ckpt \
+  mode=test \
+  dataset/view_sampler=evaluation \
+  test.compute_scores=true
 ```
 
-### Cross-Dataset Generalization
+## 原始项目信息
 
-We use the default model trained on RealEstate10K to conduct cross-dataset evaluations. To evaluate them, *e.g.*, on DTU, run the following command
+**论文**: [MVSplat: Efficient 3D Gaussian Splatting from Sparse Multi-View Images](https://arxiv.org/abs/2403.14627) (ECCV 2024 Oral)
 
-```bash
-# Table 2: RealEstate10K -> DTU
-python -m src.main +experiment=dtu \
-checkpointing.load=checkpoints/re10k.ckpt \
-mode=test \
-dataset/view_sampler=evaluation \
-dataset.view_sampler.index_path=assets/evaluation_index_dtu_nctx2.json \
-test.compute_scores=true
-```
+**作者**: Yuedong Chen, Haofei Xu, Chuanxia Zheng, Bohan Zhuang, Marc Pollefeys, Andreas Geiger, Tat-Jen Cham, Jianfei Cai
 
-**More running commands can be found at [more_commands.sh](more_commands.sh).**
-
-## BibTeX
-
+**引用**:
 ```bibtex
 @article{chen2024mvsplat,
     title   = {MVSplat: Efficient 3D Gaussian Splatting from Sparse Multi-View Images},
@@ -206,6 +93,6 @@ test.compute_scores=true
 }
 ```
 
-## Acknowledgements
+## 致谢
 
-The project is largely based on [pixelSplat](https://github.com/dcharatan/pixelsplat) and has incorporated numerous code snippets from [UniMatch](https://github.com/autonomousvision/unimatch). Many thanks to these two projects for their excellent contributions!
+本项目基于 [pixelSplat](https://github.com/dcharatan/pixelsplat) 和 [UniMatch](https://github.com/autonomousvision/unimatch)。
