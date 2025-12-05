@@ -1,29 +1,35 @@
+"""
+可视化回调模块
+
+在验证时自动保存对比图像，方便观察模型效果。
+"""
+
 from pytorch_lightning import Callback, LightningModule, Trainer
 from pytorch_lightning.utilities import rank_zero_only
+import torch
+from pathlib import Path
 
 from ..dataset.types import BatchedExample
-from ..misc.image_io import prep_image
-from ..visualization.annotation import add_label
-from ..visualization.layout import add_border, hcat, vcat
-from ..visualization.validation_in_3d import render_cameras, render_projections
+from ..misc.image_io import prep_image, save_image
 
 
 class VisualizationCallback(Callback):
     """
-    可视化回调，负责在验证步骤中生成和记录图像。
+    简单的可视化回调
     
-    将可视化逻辑从ModelWrapper中分离出来，遵循单一职责原则。
+    功能:
+    - 在验证时保存输入图像、真值和预测结果的对比图
+    - 图像保存到 outputs/visualizations/ 目录
     """
     
-    def __init__(self, extended_visualization: bool = False):
+    def __init__(self, output_dir: str = "outputs/visualizations"):
         """
-        初始化可视化回调。
-        
         Args:
-            extended_visualization: 是否启用扩展可视化（额外的视频渲染）。
+            output_dir: 可视化输出目录
         """
         super().__init__()
-        self.extended_visualization = extended_visualization
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
     
     @rank_zero_only
     def on_validation_batch_end(
@@ -36,64 +42,95 @@ class VisualizationCallback(Callback):
         dataloader_idx: int = 0,
     ) -> None:
         """
-        验证批次结束时的回调。
+        验证批次结束时保存可视化
         
-        Args:
-            trainer: PyTorch Lightning Trainer实例。
-            pl_module: LightningModule实例（ModelWrapper）。
-            outputs: 验证步骤的输出。
-            batch: 验证数据批次。
-            batch_idx: 批次索引。
-            dataloader_idx: 数据加载器索引。
+        保存格式:
+        - step_{global_step}_batch_{batch_idx}_context.png: 输入视图
+        - step_{global_step}_batch_{batch_idx}_gt.png: 真值
+        - step_{global_step}_batch_{batch_idx}_pred.png: 预测结果
         """
         if outputs is None:
             return
+        
+        # 只保存前几个批次的可视化
+        if batch_idx >= 3:
+            return
+        
+        step = pl_module.global_step
+        prefix = f"step_{step:06d}_batch_{batch_idx}"
+        
+        # 获取图像数据
+        context_imgs = outputs.get("context_images")  # (V, C, H, W)
+        rgb_gt = outputs.get("rgb_gt")                # (V, C, H, W)
+        rgb_pred = outputs.get("rgb_pred")            # (V, C, H, W)
+        
+        if context_imgs is None or rgb_gt is None or rgb_pred is None:
+            return
+        
+        # 保存第一个目标视角的对比图
+        if rgb_gt.shape[0] > 0:
+            # 保存输入视图 (第一个 context)
+            if context_imgs.shape[0] > 0:
+                save_image(
+                    context_imgs[0],
+                    self.output_dir / f"{prefix}_context.png"
+                )
             
-        # Extract data from outputs
-        gaussians_softmax = outputs["gaussians"]
-        rgb_softmax = outputs["rgb_pred"]
-        rgb_gt = outputs["rgb_gt"]
+            # 保存真值
+            save_image(
+                rgb_gt[0],
+                self.output_dir / f"{prefix}_gt.png"
+            )
+            
+            # 保存预测
+            save_image(
+                rgb_pred[0],
+                self.output_dir / f"{prefix}_pred.png"
+            )
+            
+            # 创建并保存对比图 (context | gt | pred 横向拼接)
+            comparison = self._create_comparison(
+                context_imgs[0] if context_imgs.shape[0] > 0 else None,
+                rgb_gt[0],
+                rgb_pred[0]
+            )
+            if comparison is not None:
+                save_image(
+                    comparison,
+                    self.output_dir / f"{prefix}_comparison.png"
+                )
+    
+    def _create_comparison(
+        self,
+        context: torch.Tensor | None,
+        gt: torch.Tensor,
+        pred: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """
+        创建横向对比图
         
-        # Construct comparison image
-        comparison = hcat(
-            add_label(vcat(*batch["context"]["image"][0]), "Context"),
-            add_label(vcat(*rgb_gt), "Target (Ground Truth)"),
-            add_label(vcat(*rgb_softmax), "Target (Softmax)"),
-        )
-        pl_module.logger.log_image(
-            "comparison",
-            [prep_image(add_border(comparison))],
-            step=pl_module.global_step,
-            caption=batch["scene"],
-        )
+        Args:
+            context: 输入图像 (C, H, W) 或 None
+            gt: 真值图像 (C, H, W)
+            pred: 预测图像 (C, H, W)
+            
+        Returns:
+            comparison: 拼接后的对比图 (C, H, W*2 or W*3)
+        """
+        images = []
         
-        # Render projections and construct projection image
-        projections = hcat(*render_projections(
-            gaussians_softmax,
-            256,
-            extra_label="(Softmax)",
-        )[0])
-        pl_module.logger.log_image(
-            "projection",
-            [prep_image(add_border(projections))],
-            step=pl_module.global_step,
-        )
+        if context is not None:
+            # 确保尺寸一致
+            if context.shape[-2:] != gt.shape[-2:]:
+                context = torch.nn.functional.interpolate(
+                    context.unsqueeze(0),
+                    size=gt.shape[-2:],
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0)
+            images.append(context)
         
-        # Draw cameras
-        cameras = hcat(*render_cameras(batch, 256))
-        pl_module.logger.log_image(
-            "cameras", [prep_image(add_border(cameras))], step=pl_module.global_step
-        )
+        images.extend([gt, pred])
         
-        # Encoder visualizations
-        if hasattr(pl_module, 'encoder_visualizer') and pl_module.encoder_visualizer is not None:
-            for k, image in pl_module.encoder_visualizer.visualize(
-                batch["context"], pl_module.global_step
-            ).items():
-                pl_module.logger.log_image(k, [prep_image(image)], step=pl_module.global_step)
-        
-        # Run video validation step
-        pl_module.render_video_interpolation(batch)
-        pl_module.render_video_wobble(batch)
-        if self.extended_visualization:
-            pl_module.render_video_interpolation_exaggerated(batch)
+        # 横向拼接
+        return torch.cat(images, dim=-1)
